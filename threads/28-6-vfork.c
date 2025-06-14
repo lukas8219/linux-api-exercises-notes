@@ -3,7 +3,7 @@
 #include <sys/wait.h>
 
 int main(){
-	for(int i=0; i<100000;i++){
+	for(int i=0; i<1000000;i++){
 		pid_t pid = vfork();
 		if (pid == 0){
 			exit(0);
