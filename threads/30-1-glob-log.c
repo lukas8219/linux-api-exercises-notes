@@ -6,11 +6,16 @@ static volatile int global = 0;
 static void *thread_fn(void* args){
   int loops = *((int *) args);
   int local;
+  pthread_t tid = pthread_self();
   for(int i=0; i<loops; i++){
     local = global;
     local++;
     global = local;
+    //printf("Tid[%ld] Global[%d]\n", tid, global);
+    // Adding this ^ causes IO Buffering, more Syscalls etc - thus `masking` the race conditions
+    // This is called Heisenburg effect
   }
+  return 0;
 }
 int main(){
   pthread_t f1, f2;
@@ -25,6 +30,6 @@ int main(){
   }
   code = pthread_join(f1, NULL);
   code = pthread_join(f2, NULL);
-  printf("%d\n", global);
+  printf("Final value is Global[%d]", global);
   exit(EXIT_SUCCESS);
 }
