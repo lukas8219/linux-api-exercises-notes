@@ -1,5 +1,27 @@
 #include <stdlib.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
+#include <stdint.h>
+
+int* create_shuffled_array(int size) {
+  int* array = malloc(size * sizeof(int));
+
+  for(int i = 0; i<size; i++){
+    array[i] = i + 1;
+  }
+
+  srand(size);
+  for (size_t i = size - 1; i > 0; i--) {
+      size_t j = rand() % (i + 1);
+      int tmp = array[i];
+      array[i] = array[j];
+      array[j] = tmp;
+  }
+
+  return array;
+}
+
 struct t_node {
   struct t_node *right;
   struct t_node *left;
@@ -50,16 +72,45 @@ void find_and_print_value(struct t_node **tree, int value){
   }
 }
 
+int size = 100000;
+struct t_node volatile *non_safe_three;
+atomic_int volatile non_safe_counter = 0;
+int MAX_WORKERS = 16;
+
+void* insert_into_non_safe(void* args){
+  int* shuffled_array = (int*) args;
+  int counter = atomic_load(&non_safe_counter);
+  while (counter < size) {
+    int value = shuffled_array[counter];
+    insert((struct t_node**)&non_safe_three, value);
+    counter = atomic_fetch_add(&non_safe_counter, 1);
+  }
+  return 0;
+}
+
 int main(){
-  struct t_node *tree = create_empty_node(150);
-  insert(&tree, 10);
-  insert(&tree, 200);
-  insert(&tree, 1);
-  insert(&tree, 500);
-  find_and_print_value(&tree, 150);
-  find_and_print_value(&tree, 10);
-  find_and_print_value(&tree, 200);
-  find_and_print_value(&tree, 1);
-  find_and_print_value(&tree, 500);
+  struct t_node *tree = create_empty_node(0);
+  non_safe_three = create_empty_node(0);
+  int* shuffled_array = create_shuffled_array(size);
+  for(int i = 0; i<size; i++){
+    insert(&tree, shuffled_array[i]);
+  }
+
+  pthread_t* workers[MAX_WORKERS];
+
+  for(int i=0; i<MAX_WORKERS; i++){
+    pthread_t *worker;
+    pthread_create(worker, NULL, insert_into_non_safe, shuffled_array);
+    workers[i] = worker;
+  }
+
+  for(int i=0; i<MAX_WORKERS; i++){
+    pthread_join(*workers[i], NULL);
+  }
+
+  int value = shuffled_array[100];
+  printf("%d\n", value);
+  find_and_print_value((struct t_node**)&non_safe_three, value);
+
   return 0;
 }
