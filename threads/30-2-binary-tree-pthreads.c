@@ -1,5 +1,27 @@
 #include <stdlib.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
+#include <stdint.h>
+
+int* create_shuffled_array(int size) {
+  int* array = malloc(size * sizeof(int));
+
+  for(int i = 0; i<size; i++){
+    array[i] = i + 1;
+  }
+
+  srand(size);
+  for (size_t i = size - 1; i > 0; i--) {
+      size_t j = rand() % (i + 1);
+      int tmp = array[i];
+      array[i] = array[j];
+      array[j] = tmp;
+  }
+
+  return array;
+}
+
 struct t_node {
   struct t_node *right;
   struct t_node *left;
@@ -50,16 +72,152 @@ void find_and_print_value(struct t_node **tree, int value){
   }
 }
 
+int size = 100000;
+struct t_node volatile *non_safe_three;
+atomic_int volatile non_safe_counter = 0;
+
+struct t_node volatile *safe_three;
+static pthread_mutex_t three_mutex = PTHREAD_MUTEX_INITIALIZER;
+int volatile safe_counter = 0;
+struct t_node volatile *safe_three_mirror;
+static pthread_mutex_t three_mutex_mirror = PTHREAD_MUTEX_INITIALIZER;
+int volatile safe_counter_mirror = 0;
+int MAX_WORKERS = 500;
+
+void* insert_into_non_safe(void* args){
+  int* shuffled_array = (int*) args;
+  int counter = atomic_load(&non_safe_counter);
+  while (counter < size) {
+    int value = shuffled_array[counter];
+    insert((struct t_node**)&non_safe_three, value);
+    counter = atomic_fetch_add(&non_safe_counter, 1);
+  }
+  return 0;
+}
+
+void* insert_into_safe(void* args){
+  int* shuffled_array = (int*) args;
+  //unoptimized way - doing a hotloop - maybe a pthread_cond_wait
+  while (1) {
+    pthread_mutex_lock(&three_mutex);
+    if (safe_counter >= size) {
+      pthread_mutex_unlock(&three_mutex);
+      break;
+    }
+    int value = shuffled_array[safe_counter];
+    insert((struct t_node**)&safe_three, value);
+    ++safe_counter;
+    pthread_mutex_unlock(&three_mutex);
+  }
+  return 0;
+}
+
+void* insert_into_mirror(void* args){
+  int* shuffled_array = (int*) args;
+  //unoptimized way - doing a hotloop - maybe a pthread_cond_wait
+  while (1) {
+    pthread_mutex_lock(&three_mutex_mirror);
+    if (safe_counter_mirror >= size) {
+      pthread_mutex_unlock(&three_mutex_mirror);
+      break;
+    }
+    int value = shuffled_array[safe_counter_mirror];
+    insert((struct t_node**)&safe_three_mirror, value);
+    ++safe_counter_mirror;
+    pthread_mutex_unlock(&three_mutex_mirror);
+  }
+  return 0;
+}
+
+int* tree_to_array_bfs(struct t_node* tree, int* output, int size){
+  int front = 0, rear = 0, count = 0;
+
+  struct t_node *queue[size * 2];
+  queue[rear++] = tree;
+  while(front < rear && count < size) {
+    struct t_node* curr = queue[front++];
+    output[count++] = curr->value;
+    if(curr->left != NULL){
+      queue[rear++] = curr->left;
+    }
+
+    if(curr->right != NULL){
+      queue[rear++] = curr->right;
+    }
+  }
+  return output;
+}
+
+int compare_arrays(int* arr0, int* arr1, int size){
+  for(int i = 0; i<size; i++){
+    if (arr0[i] != arr1[i]) {
+      printf("Index[%d] Value[%d] Value[%d]\n", i, arr0[i], arr1[i]);
+      return 1;
+    }
+  }
+  return 0;
+}
+
 int main(){
-  struct t_node *tree = create_empty_node(150);
-  insert(&tree, 10);
-  insert(&tree, 200);
-  insert(&tree, 1);
-  insert(&tree, 500);
-  find_and_print_value(&tree, 150);
-  find_and_print_value(&tree, 10);
-  find_and_print_value(&tree, 200);
-  find_and_print_value(&tree, 1);
-  find_and_print_value(&tree, 500);
+  non_safe_three = create_empty_node(0);
+  safe_three = create_empty_node(0);
+  safe_three_mirror = create_empty_node(0);
+
+  int* shuffled_array = create_shuffled_array(size);
+
+  pthread_t workers_non_safe[MAX_WORKERS];
+
+  for(int i=0; i < MAX_WORKERS; i++){
+    pthread_t worker;
+    pthread_create(&worker, NULL, insert_into_non_safe, shuffled_array);
+    workers_non_safe[i] = worker;
+  }
+
+  for(int i=0; i<MAX_WORKERS; i++){
+    pthread_join(workers_non_safe[i], NULL);
+  }
+
+  pthread_t workers_safe[MAX_WORKERS];
+  for(int i=0; i < MAX_WORKERS; i++){
+    pthread_t worker;
+    pthread_create(&worker, NULL, insert_into_safe, shuffled_array);
+    workers_safe[i] = worker;
+  }
+
+  for(int i=0; i<MAX_WORKERS; i++){
+    pthread_join(workers_safe[i], NULL);
+  }
+
+  pthread_t workers_safe_mirror[MAX_WORKERS];
+  for(int i=0; i < MAX_WORKERS; i++){
+    pthread_t worker;
+    pthread_create(&worker, NULL, insert_into_mirror, shuffled_array);
+    workers_safe_mirror[i] = worker;
+  }
+
+  for(int i=0; i<MAX_WORKERS; i++){
+    pthread_join(workers_safe_mirror[i], NULL);
+  }
+
+  int resulting_array[size];
+  int resulting_array_non_safe[size];
+  int resulting_array_safe_2[size];
+  tree_to_array_bfs((struct t_node*)safe_three, resulting_array, size);
+  tree_to_array_bfs((struct t_node*)non_safe_three, resulting_array_non_safe, size);
+  tree_to_array_bfs((struct t_node*)safe_three_mirror, resulting_array_safe_2, size);
+
+  int code = compare_arrays(resulting_array, resulting_array_non_safe, size);
+
+  if (code != 0) {
+    printf("Safe and non-safe are not equal - expected\n");
+  }
+
+  code = compare_arrays(resulting_array, resulting_array_safe_2, size);
+
+  if (code != 0) {
+    printf("Safe is not equal\n");
+    return code;
+  }
+
   return 0;
 }
