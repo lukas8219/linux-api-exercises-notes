@@ -74,8 +74,11 @@ void find_and_print_value(struct t_node **tree, int value){
 
 int size = 100000;
 struct t_node volatile *non_safe_three;
+struct t_node volatile *safe_three;
+static pthread_mutex_t three_mutex = PTHREAD_MUTEX_INITIALIZER;
 atomic_int volatile non_safe_counter = 0;
-int MAX_WORKERS = 16;
+atomic_int volatile safe_counter = 0;
+int MAX_WORKERS = 500;
 
 void* insert_into_non_safe(void* args){
   int* shuffled_array = (int*) args;
@@ -88,29 +91,60 @@ void* insert_into_non_safe(void* args){
   return 0;
 }
 
+void* insert_into_safe(void* args){
+  int* shuffled_array = (int*) args;
+  int counter = atomic_load(&safe_counter);
+  while (counter < size) {
+    int s = pthread_mutex_lock(&three_mutex);
+    if (s != 0) {
+      exit(1);
+      return 0;
+    }
+    int value = shuffled_array[counter];
+    insert((struct t_node**)&safe_three, value);
+    s = pthread_mutex_unlock(&three_mutex);
+    counter = atomic_fetch_add(&safe_counter, 1);
+  }
+  return 0;
+}
+
 int main(){
   struct t_node *tree = create_empty_node(0);
   non_safe_three = create_empty_node(0);
+  safe_three = create_empty_node(0);
+
   int* shuffled_array = create_shuffled_array(size);
-  for(int i = 0; i<size; i++){
+  for(int i = 0; i < size; i++){
     insert(&tree, shuffled_array[i]);
   }
 
-  pthread_t* workers[MAX_WORKERS];
+  pthread_t workers_non_safe[MAX_WORKERS];
 
-  for(int i=0; i<MAX_WORKERS; i++){
-    pthread_t *worker;
-    pthread_create(worker, NULL, insert_into_non_safe, shuffled_array);
-    workers[i] = worker;
+  for(int i=0; i < MAX_WORKERS; i++){
+    pthread_t worker;
+    pthread_create(&worker, NULL, insert_into_non_safe, shuffled_array);
+    workers_non_safe[i] = worker;
   }
 
   for(int i=0; i<MAX_WORKERS; i++){
-    pthread_join(*workers[i], NULL);
+    pthread_join(workers_non_safe[i], NULL);
+  }
+
+  pthread_t workers_safe[MAX_WORKERS];
+  for(int i=0; i < MAX_WORKERS; i++){
+    pthread_t worker;
+    pthread_create(&worker, NULL, insert_into_safe, shuffled_array);
+    workers_safe[i] = worker;
+  }
+
+  for(int i=0; i<MAX_WORKERS; i++){
+    pthread_join(workers_safe[i], NULL);
   }
 
   int value = shuffled_array[100];
   printf("%d\n", value);
   find_and_print_value((struct t_node**)&non_safe_three, value);
+  find_and_print_value((struct t_node **)&safe_three, value);
 
   return 0;
 }
